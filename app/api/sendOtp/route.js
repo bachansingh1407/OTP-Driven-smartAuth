@@ -1,37 +1,37 @@
 import { NextResponse } from "next/server";
-import { otpStore } from "@/app/utils/otpStore";
+import { redis } from "@/app/utils/redis";
 
 export async function POST(req) {
   try {
     const { phone } = await req.json();
 
     if (!phone) {
+      return NextResponse.json({ message: "Phone required" }, { status: 400 });
+    }
+
+    // 🚫 Check lock
+    const isLocked = await redis.get(`otp_lock:${phone}`);
+    if (isLocked) {
       return NextResponse.json(
-        { message: "Phone number required" },
-        { status: 400 }
+        { message: "Too many attempts. Try later." },
+        { status: 429 }
       );
     }
 
-    // Generate 6-digit OTP
+    // Generate OTP
     const otp = Math.floor(100000 + Math.random() * 900000).toString();
 
-    // Expiry (5 mins)
-    const expiresAt = Date.now() + 5 * 60 * 1000;
+    // Store OTP (5 min TTL)
+    await redis.set(`otp:${phone}`, otp, { ex: 300 });
 
-    // Store OTP
-    otpStore.set(phone, { otp, expiresAt });
+    // Reset attempts
+    await redis.del(`otp_attempts:${phone}`);
 
-    // 🚨 Replace with SMS provider (Twilio / MSG91)
-    console.log(`📨 OTP for ${phone}: ${otp}`);
+    // 🔔 Send SMS (Twilio / MSG91)
+    console.log(`OTP for ${phone}: ${otp}`);
 
-    return NextResponse.json({
-      success: true,
-      message: "OTP sent successfully",
-    });
-  } catch (error) {
-    return NextResponse.json(
-      { message: "Failed to send OTP" },
-      { status: 500 }
-    );
+    return NextResponse.json({ success: true });
+  } catch {
+    return NextResponse.json({ message: "Failed to send OTP" }, { status: 500 });
   }
 }

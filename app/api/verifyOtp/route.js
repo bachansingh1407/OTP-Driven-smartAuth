@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { otpStore } from "@/app/utils/otpStore";
+import { redis } from "@/app/utils/redis";
 
 export async function POST(req) {
   try {
@@ -12,45 +12,40 @@ export async function POST(req) {
       );
     }
 
-    const storedOtp = otpStore.get(phone);
+    const savedOtp = await redis.get<string>(`otp:${phone}`);
 
-    if (!storedOtp) {
-      return NextResponse.json(
-        { message: "OTP expired or not found" },
-        { status: 400 }
-      );
-    }
-
-    const { otp: savedOtp, expiresAt } = storedOtp;
-
-    if (Date.now() > expiresAt) {
-      otpStore.delete(phone);
+    if (!savedOtp) {
       return NextResponse.json(
         { message: "OTP expired" },
         { status: 400 }
       );
     }
 
+    // ❌ Invalid OTP
     if (otp !== savedOtp) {
+      const attempts = (await redis.incr(`otp_attempts:${phone}`)) || 1;
+
+      // lock after 3 tries
+      if (attempts >= 3) {
+        await redis.set(`otp_lock:${phone}`, true, { ex: 900 });
+        await redis.del(`otp:${phone}`);
+      }
+
       return NextResponse.json(
         { message: "Invalid OTP" },
         { status: 400 }
       );
     }
 
-    // ✅ OTP VERIFIED
-    otpStore.delete(phone);
+    // ✅ SUCCESS
+    await redis.del(`otp:${phone}`);
+    await redis.del(`otp_attempts:${phone}`);
 
-    // 👉 SAVE USER TO DB HERE
-    // await User.create({ phone }) OR update lastLogin
-
-    return NextResponse.json({
-      success: true,
-      message: "OTP verified successfully",
-    });
-  } catch (error) {
+    // 👉 Create session / JWT here
+    return NextResponse.json({ success: true });
+  } catch {
     return NextResponse.json(
-      { message: "OTP verification failed" },
+      { message: "Verification failed" },
       { status: 500 }
     );
   }
